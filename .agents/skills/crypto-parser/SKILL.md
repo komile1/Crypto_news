@@ -65,6 +65,7 @@ def sanitize_rss_text(raw_html: str | None, max_length: int = 500) -> str:
    - `SOL`: `\b(sol|solana|солан\w*)\b`
    - `BNB`: `\b(bnb|binance coin)\b`
    - `XRP`: `\b(xrp|ripple|рипл\w*)\b`
+   - `LINK`: `\b(link|chainlink|чейнлинк\w*)\b`
 
 ---
 

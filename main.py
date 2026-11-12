@@ -1,9 +1,12 @@
 """Точка входа в десктопное приложение мониторинга рынка криптовалют."""
 
+from gui import CryptoMonitorApp
+
 
 def main() -> None:
-    """Запуск приложения (основная логика и GUI будут подключены на следующем этапе)."""
-    pass
+    """Запуск главного окна CustomTkinter."""
+    app = CryptoMonitorApp()
+    app.mainloop()
 
 
 if __name__ == "__main__":
