@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 from datetime import datetime
-from typing import Callable
+from typing import Any, Callable
 
 import customtkinter as ctk
 
 from gui.theme import DEFAULT_COINS, PALETTE, TIMELINE_OPTIONS
+from src.core import collect_and_filter_data
+from src.pdf_exporter import export_report_to_pdf, resolve_resource_path
 
 
 class CryptoMonitorApp(ctk.CTk):
@@ -24,7 +27,11 @@ class CryptoMonitorApp(ctk.CTk):
 
         self._on_generate_report = on_generate_report
         self._on_export_pdf = on_export_pdf
-        self._anim_after_id: str | None = None
+        self._is_busy: bool = False
+
+        # Текущие загруженные данные для мгновенного экспорта в PDF
+        self._current_prices: dict[str, dict[str, float]] = {}
+        self._current_news: list[dict[str, Any]] = []
 
         # Глобальная конфигурация темы
         ctk.set_appearance_mode("dark")
@@ -35,6 +42,7 @@ class CryptoMonitorApp(ctk.CTk):
         self.geometry("1080x660")
         self.minsize(920, 580)
         self.configure(fg_color=PALETTE.bg_root)
+        self._apply_window_icon()
 
         # Состояние фильтров
         self.coin_vars: dict[str, ctk.BooleanVar] = {}
@@ -54,6 +62,19 @@ class CryptoMonitorApp(ctk.CTk):
 
         self._setup_layout()
         self._populate_initial_preview()
+
+    def _apply_window_icon(self) -> None:
+        """Устанавливает фирменную иконку окна (.ico) с поддержкой PyInstaller."""
+        icon_path = resolve_resource_path(os.path.join("assets", "app_icon.ico"))
+        if os.path.isfile(icon_path):
+            try:
+                self.iconbitmap(icon_path)
+            except Exception as exc:
+                print(
+                    f"[PARSER ERROR] Window Icon ({icon_path}): {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
 
     # ------------------------------------------------------------------
     # Построение интерфейса
@@ -358,7 +379,7 @@ class CryptoMonitorApp(ctk.CTk):
             border_color=PALETTE.border_input,
         )
         self.progress_bar.grid(row=7, column=0, sticky="ew", padx=22, pady=(0, 12))
-        self.progress_bar.set(0.36)  # Начальное визуальное состояние как на референсе
+        self.progress_bar.set(0.36)
 
     def _build_main_content(self) -> None:
         """Создает правую область: верхнюю строку котировок, карточку «Топ-5 новостей» и кнопку «Скачать PDF»."""
@@ -386,7 +407,7 @@ class CryptoMonitorApp(ctk.CTk):
 
         self.lbl_market_bar = ctk.CTkLabel(
             self.top_bar,
-            text="⚡ Рынок: BTC $91,420 (+2.4%)   •   ETH $3,180 (+1.1%)   •   SOL $194.50 (+4.8%)",
+            text="⚡ Нажмите «Сгенерировать рапорт» для загрузки актуальных котировок и RSS",
             font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
             text_color=PALETTE.text_secondary,
             anchor="w",
@@ -535,32 +556,32 @@ class CryptoMonitorApp(ctk.CTk):
         )
 
     def _populate_initial_preview(self) -> None:
-        """Заполняет окно превью стартовыми демонстрационными новостями в стиле референса."""
+        """Заполняет окно превью стартовыми новостями до первого нажатия «Сгенерировать рапорт»."""
         sample_items = [
             (
                 "1. [BTC] Институциональный приток в спотовые Bitcoin-ETF обновил недельный максимум",
                 "Крупнейшие фонды зафиксировали чистый приток капитала на фоне стабилизации макроэкономических показателей и роста ликвидности.",
-                "Источник: CoinDesk RSS  •  14 мин назад  •  Тикер: BTC",
+                "Источник: CoinDesk RSS  •  Готов к живому обновлению  •  Тикер: BTC",
             ),
             (
                 "2. [SOL] Экосистема Solana обработала рекордный объем транзакций в DEX-протоколах",
                 "Суточный объем торгов в децентрализованных пулах ликвидности вырос на 18%, комиссионные издержки остаются ниже $0.01.",
-                "Источник: Cointelegraph RSS  •  42 мин назад  •  Тикер: SOL",
+                "Источник: Cointelegraph RSS  •  Готов к живому обновлению  •  Тикер: SOL",
             ),
             (
                 "3. [ETH] Разработчики Ethereum согласовали график оптимизации валидаторов в следующем обновлении",
                 "Обновление направлено на снижение нагрузки на ноды и ускорение финализации блоков в периоды пиковой активности сети.",
-                "Источник: Decrypt RSS  •  1 ч назад  •  Тикер: ETH",
+                "Источник: Decrypt RSS  •  Готов к живому обновлению  •  Тикер: ETH",
             ),
             (
-                "4. [BTC / Рынок] Аналитический обзор волатильности перед публикацией данных по инфляции",
-                "Открытый интерес на фьючерсных рынках сохраняет нейтральный баланс, ключевые уровни поддержки удерживаются покупателями.",
-                "Источник: CryptoSlate RSS  •  2 ч назад  •  Тикер: BTC",
+                "4. [LINK] Протокол кросс-чейн совместимости Chainlink CCIP расширяет интеграцию в DeFi",
+                "Децентрализованные оракулы обеспечили верификацию кросс-чейн транзакций для новых пулов ликвидности.",
+                "Источник: CoinDesk RSS  •  Готов к живому обновлению  •  Тикер: LINK",
             ),
             (
-                "5. [SOL / DeFi] Новые стандарты безопасности для кросс-чейн мостов и агрегаторов ликвидности",
-                "Аудиторские компании представили открытый чек-лист автоматического мониторинга смарт-контрактов в реальном времени.",
-                "Источник: The Block RSS  •  3 ч назад  •  Тикер: SOL",
+                "5. [BNB / XRP] Обзор ликвидности крупнейших альткоинов на глобальных спотовых площадках",
+                "Торговая активность сохраняет устойчивость, нажмите «Сгенерировать рапорт» слева для получения свежих RSS-лент и цен CoinGecko.",
+                "Источник: Cointelegraph RSS  •  Готов к живому обновлению",
             ),
         ]
         self.render_news_items(sample_items)
@@ -574,7 +595,8 @@ class CryptoMonitorApp(ctk.CTk):
         if not items:
             tb.insert(
                 "end",
-                "Нет новостей по выбранным фильтрам.\nВыберите хотя бы одну монету слева и нажмите «Сгенерировать рапорт».",
+                "По выбранным монетам и периоду новостей в лентах не найдено.\n"
+                "Попробуйте увеличить период (например, «За неделю» или «За месяц») или отметить дополнительные монеты.",
                 "summary",
             )
         else:
@@ -585,14 +607,38 @@ class CryptoMonitorApp(ctk.CTk):
 
         self.preview_textbox.configure(state="disabled")
 
+    def _format_market_bar(self, prices: dict[str, dict[str, float]], selected: list[str]) -> str:
+        """Форматирует строку актуальных котировок для верхней панели."""
+        if not prices:
+            return "⚡ Котировки: нет данных от CoinGecko (проверьте интернет-соединение)"
+
+        order = [c for c in selected if c in prices] or list(prices.keys())
+        parts: list[str] = []
+        for ticker in order[:4]:
+            info = prices.get(ticker, {})
+            usd = float(info.get("usd", 0.0))
+            chg = float(info.get("change_24h", 0.0))
+            sign = "+" if chg >= 0 else ""
+            price_fmt = f"${usd:,.2f}" if usd >= 1 else f"${usd:,.4f}"
+            parts.append(f"{ticker} {price_fmt} ({sign}{chg:.1f}%)")
+
+        return "⚡ Рынок: " + "   •   ".join(parts)
+
     def set_progress(self, value: float, status_text: str) -> None:
         """Обновляет индикатор прогресса (0.0 .. 1.0) и текстовый статус."""
         clamped = max(0.0, min(1.0, value))
         self.progress_bar.set(clamped)
         self.lbl_progress_status.configure(text=status_text)
 
+    # ------------------------------------------------------------------
+    # Боевая интеграция с src/core.py в фоновом потоке
+    # ------------------------------------------------------------------
+
     def _handle_generate_clicked(self) -> None:
         """Обработчик нажатия кнопки «Сгенерировать рапорт»."""
+        if self._is_busy:
+            return
+
         selected = self.get_selected_coins()
         timeline = self.get_selected_timeline()
 
@@ -605,94 +651,140 @@ class CryptoMonitorApp(ctk.CTk):
             self._on_generate_report(selected, timeline)
             return
 
-        # Демо-анимация прогресс-бара и фильтрации превью до подключения боевого парсера
+        self._is_busy = True
         self.btn_generate.configure(state="disabled", text="Сбор данных...")
-        self.set_progress(0.15, "Запрос RSS/API...")
-        self._animate_demo_generation(selected, timeline, step=1)
+        self.set_progress(0.25, "Запрос RSS и CoinGecko...")
 
-    def _animate_demo_generation(self, selected: list[str], timeline: str, step: int) -> None:
-        """Плавная визуальная обратная связь прогресс-бара при генерации рапорта."""
-        if step == 1:
-            self.set_progress(0.45, "Очистка HTML...")
-            self._anim_after_id = self.after(
-                180, lambda: self._animate_demo_generation(selected, timeline, 2)
-            )
-        elif step == 2:
-            self.set_progress(0.80, "Запись JSON-кэша...")
-            self._anim_after_id = self.after(
-                180, lambda: self._animate_demo_generation(selected, timeline, 3)
-            )
-        else:
-            now_str = datetime.now().strftime("%H:%M:%S")
-            self.set_progress(1.0, f"Обновлено в {now_str}")
-            self.lbl_cache_badge.configure(text=f"JSON Cache: {now_str}")
-            self.btn_generate.configure(state="normal", text="Сгенерировать рапорт")
-            self._populate_filtered_demo(selected, timeline)
+        worker = threading.Thread(
+            target=self._run_collect_worker,
+            args=(selected, timeline),
+            daemon=True,
+        )
+        worker.start()
 
-    def _populate_filtered_demo(self, selected: list[str], timeline: str) -> None:
-        """Фильтрует демо-новости по выбранным чекбоксам монет."""
-        period_label = timeline.replace("Timeline: ", "")
-        demo_db = [
-            (
-                "BTC",
-                "[BTC] Биткоин удерживает ключевой уровень на фоне притока в спотовые ETF",
-                "Объем торгов на спотовых площадках вырос на 14%, институциональные участники продолжают аккумуляцию актива.",
-                f"Источник: CoinDesk RSS  •  Период: {period_label}",
-            ),
-            (
-                "ETH",
-                "[ETH] Активность в L2-сетях Ethereum достигла нового исторического максимума",
-                "Суммарный TVL роллапов вырос благодаря снижению стоимости газа и запуску новых протоколов ликвидного стейкинга.",
-                f"Источник: Decrypt RSS  •  Период: {period_label}",
-            ),
-            (
-                "SOL",
-                "[SOL] Сеть Solana демонстрирует рост числа активных адресов и DEX-оборота",
-                "Высокая пропускная способность блокчейна привлекает новые потребительские приложения и платежные шлюзы.",
-                f"Источник: Cointelegraph RSS  •  Период: {period_label}",
-            ),
-            (
-                "BNB",
-                "[BNB] Квартальное сжигание токенов BNB сократило оборотное предложение сети",
-                "Автоматический механизм Auto-Burn успешно выполнен в BNB Chain, комиссионная активность остается стабильной.",
-                f"Источник: Binance Blog RSS  •  Период: {period_label}",
-            ),
-            (
-                "XRP",
-                "[XRP] Трансграничные платежные коридоры расширяют интеграцию с банковскими шлюзами",
-                "Новые партнерства в Азиатско-Тихоокеанском регионе увеличили суточную ликвидность пар с XRP.",
-                f"Источник: CryptoSlate RSS  •  Период: {period_label}",
-            ),
-            (
-                "LINK",
-                "[LINK] Протокол кросс-чейн совместимости Chainlink CCIP интегрирован новыми DeFi-платформами",
-                "Децентрализованные оракулы Chainlink расширили передачу верифицированных рыночных данных для токенизированных активов.",
-                f"Источник: CoinDesk RSS  •  Период: {period_label}",
-            ),
-        ]
-
-        filtered = [
-            (f"{idx}. {title}", body, meta)
-            for idx, (ticker, title, body, meta) in enumerate(
-                [item for item in demo_db if item[0] in selected], start=1
+    def _run_collect_worker(self, selected: list[str], timeline: str) -> None:
+        """Фоновый поток сбора RSS/API, записи temp_data.json и фильтрации."""
+        try:
+            result = collect_and_filter_data(selected_coins=selected, timeframe=timeline)
+            self.after(0, lambda: self._on_collect_finished(selected, result, None))
+        except Exception as exc:
+            print(
+                f"[PARSER ERROR] Worker Thread: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+                flush=True,
             )
-        ]
-        self.lbl_preview_title.configure(text=f"Топ-{len(filtered)} новостей")
-        self.render_news_items(filtered)
+            self.after(0, lambda e=exc: self._on_collect_finished(selected, None, e))
+
+    def _on_collect_finished(
+        self,
+        selected: list[str],
+        result: dict[str, Any] | None,
+        error: Exception | None,
+    ) -> None:
+        """Обновляет GUI после завершения фонового сбора и фильтрации данных."""
+        self._is_busy = False
+        self.btn_generate.configure(state="normal", text="Сгенерировать рапорт")
+
+        if error is not None or result is None:
+            self.set_progress(0.0, "Ошибка сбора (см. консоль)")
+            return
+
+        self._current_prices = result.get("prices", {})
+        self._current_news = result.get("news", [])
+
+        # Обновляем верхнюю панель котировок и статус JSON-кэша
+        self.lbl_market_bar.configure(text=self._format_market_bar(self._current_prices, selected))
+        now_short = datetime.now().strftime("%H:%M:%S")
+        self.lbl_cache_badge.configure(text=f"temp_data.json: {now_short}")
+
+        # Отрисовываем отфильтрованные новости
+        formatted_items: list[tuple[str, str, str]] = []
+        for idx, item in enumerate(self._current_news, start=1):
+            matched = ", ".join(item.get("matched_coins") or selected)
+            title = f"{idx}. [{matched}] {item.get('title', 'Без заголовка')}"
+            summary = item.get("summary") or "Описание отсутствует."
+            source = item.get("source") or "RSS"
+            pub_str = item.get("published_str") or ""
+            meta = f"Источник: {source}   •   {pub_str}   •   Тикеры: {matched}"
+            formatted_items.append((title, summary, meta))
+
+        count = len(formatted_items)
+        self.lbl_preview_title.configure(
+            text=f"Топ-{count} новостей" if count > 0 else "Новости не найдены"
+        )
+        self.render_news_items(formatted_items)
+        self.set_progress(1.0, f"Собрано: {count} нов. ({now_short})")
 
     def _handle_export_pdf_clicked(self) -> None:
-        """Обработчик нажатия кнопки «Скачать PDF»."""
+        """Обработчик нажатия кнопки «Скачать PDF» — сохраняет PDF-отчет на Рабочий стол."""
+        if self._is_busy:
+            return
+
         if self._on_export_pdf is not None:
             self._on_export_pdf()
             return
 
-        now_str = datetime.now().strftime("%H:%M:%S")
-        self.set_progress(1.0, f"PDF готов ({now_str})")
+        selected = self.get_selected_coins()
+        timeline = self.get_selected_timeline()
+        if not selected:
+            self.set_progress(0.0, "Выберите монеты для PDF!")
+            return
+
+        self._is_busy = True
+        self.btn_export_pdf.configure(state="disabled", text="⏳  Генерация PDF...")
+        self.set_progress(0.5, "Экспорт в PDF...")
+
+        worker = threading.Thread(
+            target=self._run_pdf_worker,
+            args=(selected, timeline),
+            daemon=True,
+        )
+        worker.start()
+
+    def _run_pdf_worker(self, selected: list[str], timeline: str) -> None:
+        """Фоновый поток генерации PDF на Рабочий стол."""
+        try:
+            # Если пользователь еще не нажимал «Сгенерировать рапорт», сначала соберем свежие данные
+            if not self._current_prices and not self._current_news:
+                data = collect_and_filter_data(selected_coins=selected, timeframe=timeline)
+                self._current_prices = data.get("prices", {})
+                self._current_news = data.get("news", [])
+
+            pdf_path = export_report_to_pdf(
+                prices=self._current_prices,
+                news_items=self._current_news,
+                selected_coins=selected,
+                timeframe=timeline,
+            )
+            self.after(0, lambda p=pdf_path: self._on_pdf_finished(p, None))
+        except Exception as exc:
+            print(
+                f"[PARSER ERROR] PDF Worker: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            self.after(0, lambda e=exc: self._on_pdf_finished("", e))
+
+    def _on_pdf_finished(self, pdf_path: str, error: Exception | None) -> None:
+        """Обновляет UI после сохранения PDF на Рабочий стол."""
+        self._is_busy = False
+        self.btn_export_pdf.configure(state="normal", text="📄  Скачать PDF")
+
+        if error is not None or not pdf_path:
+            self.set_progress(0.0, "Ошибка сохранения PDF")
+            return
+
+        filename = os.path.basename(pdf_path)
+        self.set_progress(1.0, f"PDF на Рабочем столе!")
+        self.lbl_cache_badge.configure(text=f"PDF: {filename}")
 
     def _focus_report_view(self) -> None:
         """Возвращает фокус к основному режиму просмотра новостей."""
-        self.lbl_preview_title.configure(text="Топ-5 новостей")
-        self._populate_initial_preview()
+        if self._current_news:
+            self.lbl_preview_title.configure(text=f"Топ-{len(self._current_news)} новостей")
+        else:
+            self.lbl_preview_title.configure(text="Топ-5 новостей")
+            self._populate_initial_preview()
 
     def _open_working_directory(self) -> None:
         """Открывает рабочую директорию проекта в Проводнике Windows."""
@@ -701,7 +793,11 @@ class CryptoMonitorApp(ctk.CTk):
             if sys.platform.startswith("win"):
                 os.startfile(cwd)  # noqa: S606
         except Exception as exc:
-            print(f"[PARSER ERROR] System File Explorer: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            print(
+                f"[PARSER ERROR] System File Explorer: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
 
     def _show_system_info_in_preview(self) -> None:
         """Отображает краткую архитектурную справку в окне превью."""
@@ -709,13 +805,13 @@ class CryptoMonitorApp(ctk.CTk):
         info_items = [
             (
                 "Архитектура автономного десктопного приложения",
-                "Работает полностью локально без выделенных серверов и СУБД. Все котировки и RSS-ленты агрегируются через pandas и сохраняются в перезаписываемый временный JSON-кэш.",
-                "Стек: Python  •  CustomTkinter  •  pandas  •  FPDF  •  feedparser  •  requests",
+                "Работает полностью локально без выделенных серверов и СУБД. Все котировки (CoinGecko) и RSS-ленты (CoinDesk, Cointelegraph, Decrypt) обрабатываются стандартными структурами Python (без Pandas) и сохраняются в перезаписываемый файл temp_data.json.",
+                "Стек: Python  •  CustomTkinter  •  fpdf2 (UTF-8)  •  feedparser  •  requests",
             ),
             (
-                "Готовность к сборке в единый .exe (PyInstaller)",
-                "Все пути к ресурсам и шрифтам разрешаются с поддержкой sys._MEIPASS, а экспортируемые PDF-рапорты сохраняются напрямую в рабочую папку пользователя.",
-                "Статус: Интерфейс готов к подключению модулей src/",
+                "Экспорт PDF на Рабочий стол и сборка в .exe",
+                "Итоговые PDF-отчеты автоматически сохраняются на Рабочий стол пользователя с поддержкой кириллических TTF-шрифтов.",
+                "Статус: Полностью функциональное приложение",
             ),
         ]
         self.render_news_items(info_items)
