@@ -233,22 +233,35 @@ def export_report_to_pdf(
             title = item.get("title") or "Без заголовка"
             summary = item.get("summary") or ""
             source = item.get("source") or "RSS"
+            link = (item.get("link") or "").strip()
             pub_str = item.get("published_str") or ""
             rel_age = item.get("relative_age") or ""
             age_suffix = f" ({rel_age})" if rel_age else ""
             matched = ", ".join(item.get("matched_coins") or [])
             tag_prefix = f"[{matched}] " if matched else ""
 
-            # Заголовок новости
-            pdf.set_font(ff, "B", 11)
-            pdf.set_text_color(15, 35, 65)
-            pdf.multi_cell(0, 6, f"{idx}. {tag_prefix}{title}", new_x="LMARGIN", new_y="NEXT")
+            # Заголовок новости (кликабельная ссылка на первоисточник при наличии URL)
+            if link:
+                pdf.set_font(ff, "BU", 11)
+                pdf.set_text_color(18, 92, 185)
+                pdf.multi_cell(
+                    0,
+                    6,
+                    f"{idx}. {tag_prefix}{title}",
+                    link=link,
+                    new_x="LMARGIN",
+                    new_y="NEXT",
+                )
+            else:
+                pdf.set_font(ff, "B", 11)
+                pdf.set_text_color(15, 35, 65)
+                pdf.multi_cell(0, 6, f"{idx}. {tag_prefix}{title}", new_x="LMARGIN", new_y="NEXT")
 
             # Мета-строка (Источник и время публикации)
             pdf.set_font(ff, "", 8.5)
             pdf.set_text_color(110, 125, 145)
             meta_line = f"Источник: {source}   •   Опубликовано: {pub_str}{age_suffix}"
-            pdf.cell(0, 5, meta_line, new_x="LMARGIN", new_y="NEXT")
+            pdf.cell(0, 5, meta_line, link=link if link else "", new_x="LMARGIN", new_y="NEXT")
 
             # Краткое описание (очищенное от HTML)
             if summary:

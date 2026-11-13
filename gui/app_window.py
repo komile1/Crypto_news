@@ -7,6 +7,7 @@ import os
 import sys
 import threading
 from typing import Any, Callable
+import webbrowser
 
 import customtkinter as ctk
 
@@ -608,36 +609,63 @@ class CryptoMonitorApp(ctk.CTk):
             (
                 "1. [BTC] Институциональный приток в спотовые Bitcoin-ETF обновил недельный максимум",
                 "Крупнейшие фонды зафиксировали чистый приток капитала на фоне стабилизации макроэкономических показателей и роста ликвидности.",
-                "Источник: CoinDesk RSS  •  Готов к живому обновлению  •  Тикер: BTC",
+                "Источник: CoinDesk RSS  •  Нажмите на заголовок для перехода к источнику  •  Тикер: BTC",
+                "https://www.coindesk.com/tag/bitcoin/",
             ),
             (
                 "2. [SOL] Экосистема Solana обработала рекордный объем транзакций в DEX-протоколах",
                 "Суточный объем торгов в децентрализованных пулах ликвидности вырос на 18%, комиссионные издержки остаются ниже $0.01.",
-                "Источник: Cointelegraph RSS  •  Готов к живому обновлению  •  Тикер: SOL",
+                "Источник: Cointelegraph RSS  •  Нажмите на заголовок для перехода к источнику  •  Тикер: SOL",
+                "https://cointelegraph.com/tags/solana",
             ),
             (
                 "3. [ETH] Разработчики Ethereum согласовали график оптимизации валидаторов в следующем обновлении",
                 "Обновление направлено на снижение нагрузки на ноды и ускорение финализации блоков в периоды пиковой активности сети.",
-                "Источник: Decrypt RSS  •  Готов к живому обновлению  •  Тикер: ETH",
+                "Источник: Decrypt RSS  •  Нажмите на заголовок для перехода к источнику  •  Тикер: ETH",
+                "https://decrypt.co/news/ethereum",
             ),
             (
                 "4. [LINK] Протокол кросс-чейн совместимости Chainlink CCIP расширяет интеграцию в DeFi",
                 "Децентрализованные оракулы обеспечили верификацию кросс-чейн транзакций для новых пулов ликвидности.",
-                "Источник: CoinDesk RSS  •  Готов к живому обновлению  •  Тикер: LINK",
+                "Источник: CoinDesk RSS  •  Нажмите на заголовок для перехода к источнику  •  Тикер: LINK",
+                "https://www.coindesk.com/tag/chainlink/",
             ),
             (
                 "5. [BNB / XRP] Обзор ликвидности крупнейших альткоинов на глобальных спотовых площадках",
                 "Торговая активность сохраняет устойчивость, нажмите «Сгенерировать рапорт» или выберите период Timeline слева.",
-                "Источник: Cointelegraph RSS  •  Готов к живому обновлению",
+                "Источник: Cointelegraph RSS  •  Нажмите на заголовок для перехода к источнику",
+                "https://cointelegraph.com/tags/altcoin",
             ),
         ]
         self.render_news_items(sample_items)
 
-    def render_news_items(self, items: list[tuple[str, str, str]]) -> None:
-        """Отрисовывает список кортежей (заголовок, описание, мета) в CTkTextbox с форматированием."""
+    def _open_source_url(self, url: str) -> None:
+        """Открывает ссылку на первоисточник новости в браузере по умолчанию."""
+        target = (url or "").strip()
+        if not target:
+            return
+        try:
+            webbrowser.open(target, new=2)
+        except Exception as exc:
+            print(
+                f"[PARSER ERROR] Browser Open ({target}): {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    def render_news_items(
+        self,
+        items: list[tuple[str, str, str] | tuple[str, str, str, str]],
+    ) -> None:
+        """Отрисовывает список новостей в CTkTextbox с кликабельными заголовками-ссылками на первоисточник."""
         self.preview_textbox.configure(state="normal")
         self.preview_textbox.delete("1.0", "end")
         tb = self.preview_textbox._textbox
+
+        # Удаляем старые теги ссылок перед новой отрисовкой
+        for tag_name in list(tb.tag_names()):
+            if tag_name.startswith("headline_link_"):
+                tb.tag_delete(tag_name)
 
         if not items:
             tb.insert(
@@ -647,8 +675,48 @@ class CryptoMonitorApp(ctk.CTk):
                 "summary",
             )
         else:
-            for headline, summary, meta in items:
-                tb.insert("end", f"{headline}\n", "headline")
+            for idx, entry in enumerate(items):
+                headline = entry[0]
+                summary = entry[1]
+                meta = entry[2]
+                link = (entry[3] if len(entry) > 3 else "").strip()
+
+                if link:
+                    link_tag = f"headline_link_{idx}"
+                    tb.tag_configure(
+                        link_tag,
+                        foreground="#7CE8FF",
+                        font=("Segoe UI", 12, "bold"),
+                        underline=True,
+                        spacing1=8,
+                        spacing3=2,
+                    )
+                    tb.tag_bind(
+                        link_tag,
+                        "<Enter>",
+                        lambda _e, t=link_tag: (
+                            tb.tag_configure(t, foreground="#45F0FF"),
+                            tb.configure(cursor="hand2"),
+                        ),
+                    )
+                    tb.tag_bind(
+                        link_tag,
+                        "<Leave>",
+                        lambda _e, t=link_tag: (
+                            tb.tag_configure(t, foreground="#7CE8FF"),
+                            tb.configure(cursor=""),
+                        ),
+                    )
+                    tb.tag_bind(
+                        link_tag,
+                        "<Button-1>",
+                        lambda _e, u=link: self._open_source_url(u),
+                    )
+                    display_headline = headline if headline.endswith("↗") else f"{headline} ↗"
+                    tb.insert("end", f"{display_headline}\n", link_tag)
+                else:
+                    tb.insert("end", f"{headline}\n", "headline")
+
                 tb.insert("end", f"{summary}\n", "summary")
                 tb.insert("end", f"{meta}\n", "meta")
 
@@ -794,19 +862,20 @@ class CryptoMonitorApp(ctk.CTk):
         # 2. Отрисовываем график(и) цен за выбранный промежуток времени
         self._render_gui_chart(self._current_price_history, selected, timeline)
 
-        # 3. Отрисовываем отфильтрованные новости с указанием возраста публикации
+        # 3. Отрисовываем отфильтрованные новости с указанием возраста публикации и ссылкой на первоисточник
         period_short = timeline.replace("Timeline: ", "")
-        formatted_items: list[tuple[str, str, str]] = []
+        formatted_items: list[tuple[str, str, str, str]] = []
         for idx, item in enumerate(self._current_news, start=1):
             matched = ", ".join(item.get("matched_coins") or selected)
             title = f"{idx}. [{matched}] {item.get('title', 'Без заголовка')}"
             summary = item.get("summary") or "Описание отсутствует."
             source = item.get("source") or "RSS"
+            link = (item.get("link") or "").strip()
             pub_str = item.get("published_str") or ""
             rel_age = item.get("relative_age") or ""
             age_badge = f" ({rel_age})" if rel_age else ""
             meta = f"Источник: {source}   •   {pub_str}{age_badge}   •   Период: {period_short}"
-            formatted_items.append((title, summary, meta))
+            formatted_items.append((title, summary, meta, link))
 
         count = len(formatted_items)
         self.lbl_preview_title.configure(
