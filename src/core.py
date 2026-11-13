@@ -1,4 +1,4 @@
-"""Центральная точка входа бизнес-логики: парсинг -> JSON-кэш -> фильтрация -> экспорт в PDF."""
+"""Центральная точка входа бизнес-логики: парсинг -> JSON-кэш -> фильтрация -> графики -> экспорт в PDF."""
 
 from __future__ import annotations
 
@@ -12,13 +12,13 @@ from src.processor import filter_news
 
 def collect_and_filter_data(selected_coins: list[str], timeframe: str) -> dict[str, Any]:
     """
-    Выполняет сбор данных из RSS/API, перезаписывает temp_data.json
-    и фильтрует новости по выбранным монетам и периоду.
+    Выполняет сбор данных из RSS/API с учетом выбранного периода (timeframe),
+    перезаписывает temp_data.json и фильтрует новости по монетам и времени.
     """
     normalized_coins = [str(c).strip().upper() for c in selected_coins if str(c).strip()]
 
-    # Шаг 1: Сбор свежих данных из RSS и CoinGecko API
-    raw_data = fetch_all_data(selected_coins=normalized_coins)
+    # Шаг 1: Сбор свежих данных из RSS, CoinGecko и истории свечей за выбранный период
+    raw_data = fetch_all_data(selected_coins=normalized_coins, timeframe=timeframe)
 
     # Шаг 2: Полная перезапись временного кэша temp_data.json
     cache_path = save_cache(raw_data)
@@ -32,8 +32,10 @@ def collect_and_filter_data(selected_coins: list[str], timeframe: str) -> dict[s
 
     return {
         "updated_at": raw_data.get("updated_at", ""),
+        "timeframe": timeframe,
         "cache_path": cache_path,
         "prices": raw_data.get("prices", {}),
+        "price_history": raw_data.get("price_history", {}),
         "news": filtered_news,
         "total_raw_news": len(raw_data.get("news", [])),
     }
@@ -46,10 +48,10 @@ def generate_report(
 ) -> dict[str, Any]:
     """
     Объединяет все шаги бэкенда:
-    1. Вызывает парсер RSS-лент и котировок CoinGecko.
+    1. Вызывает парсер RSS-лент, котировок и истории цен за выбранный период.
     2. Полностью перезаписывает временный кэш temp_data.json.
     3. Фильтрует новости по дубликатам, периоду и выбранным монетам (без Pandas).
-    4. Генерирует PDF-рапорт на Рабочем столе пользователя (если export_pdf=True).
+    4. Генерирует PDF-рапорт с графиками цен на Рабочем столе пользователя (если export_pdf=True).
     """
     normalized_coins = [str(c).strip().upper() for c in selected_coins if str(c).strip()]
     result = collect_and_filter_data(selected_coins=normalized_coins, timeframe=timeframe)
@@ -61,6 +63,7 @@ def generate_report(
             news_items=result.get("news", []),
             selected_coins=normalized_coins,
             timeframe=timeframe,
+            price_history=result.get("price_history", {}),
         )
 
     result["pdf_path"] = pdf_path
@@ -85,4 +88,5 @@ def export_cached_report_to_pdf(selected_coins: list[str], timeframe: str) -> st
         news_items=filtered_news,
         selected_coins=normalized_coins,
         timeframe=timeframe,
+        price_history=cached.get("price_history", {}),
     )

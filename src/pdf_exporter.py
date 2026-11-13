@@ -1,10 +1,10 @@
-"""Модуль генерации PDF-отчетов на базе fpdf2 с поддержкой кириллицы (UTF-8 / TTF)."""
+"""Модуль генерации PDF-отчетов на базе fpdf2 с поддержкой кириллицы (UTF-8 / TTF) и графиков цен."""
 
 from __future__ import annotations
 
+from datetime import datetime
 import os
 import sys
-from datetime import datetime
 from typing import Any
 
 from fpdf import FPDF
@@ -90,8 +90,11 @@ def export_report_to_pdf(
     selected_coins: list[str],
     timeframe: str,
     output_path: str | None = None,
+    price_history: dict[str, list[dict[str, float]]] | None = None,
 ) -> str:
-    """Генерирует PDF-отчет и сохраняет его на Рабочий стол пользователя."""
+    """Генерирует PDF-отчет (с котировками, графиками цен за период и новостями) и сохраняет его на Рабочий стол."""
+    from src.chart_generator import render_price_charts_image
+
     pdf = CryptoReportPDF()
     pdf.add_page()
     ff = pdf.font_family_name
@@ -122,7 +125,7 @@ def export_report_to_pdf(
 
     pdf.ln(8)
 
-    # 2. Блок с текущими котировками (CoinGecko API)
+    # 2. Блок с текущими котировками
     pdf.set_font(ff, "B", 13)
     pdf.set_text_color(20, 32, 48)
     pdf.cell(0, 8, "1. Актуальные рыночные котировки (USD)", new_x="LMARGIN", new_y="NEXT")
@@ -132,7 +135,6 @@ def export_report_to_pdf(
     pdf.ln(3)
 
     if prices:
-        # Таблица котировок
         pdf.set_fill_color(238, 243, 250)
         pdf.set_font(ff, "B", 10)
         pdf.set_text_color(30, 45, 65)
@@ -170,13 +172,46 @@ def export_report_to_pdf(
 
     pdf.ln(6)
 
-    # 3. Блок отфильтрованных новостей
+    # 3. Блок графиков цен за выбранный промежуток времени
+    if price_history:
+        chart_img = render_price_charts_image(
+            price_history=price_history,
+            selected_coins=selected_coins,
+            timeframe=timeframe,
+            theme="light",
+            width=920,
+            row_height=195,
+        )
+        if chart_img is not None:
+            pdf.set_font(ff, "B", 13)
+            pdf.set_text_color(20, 32, 48)
+            pdf.cell(
+                0,
+                8,
+                f"2. Графики цен за выбранный период ({period_label})",
+                new_x="LMARGIN",
+                new_y="NEXT",
+            )
+            pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+            pdf.ln(3)
+
+            # Рассчитываем высоту в мм при ширине 190 мм
+            img_w, img_h = chart_img.size
+            pdf_img_h = 190.0 * (img_h / max(1, img_w))
+            if pdf.get_y() + pdf_img_h > 272:
+                pdf.add_page()
+
+            pdf.image(chart_img, x=10, y=pdf.get_y(), w=190)
+            pdf.set_y(pdf.get_y() + pdf_img_h + 6)
+
+    # 4. Блок отфильтрованных новостей
+    section_num = "3" if price_history else "2"
     pdf.set_font(ff, "B", 13)
     pdf.set_text_color(20, 32, 48)
     pdf.cell(
         0,
         8,
-        f"2. Отфильтрованные новости ({len(news_items)})",
+        f"{section_num}. Отфильтрованные новости за период «{period_label}» ({len(news_items)})",
         new_x="LMARGIN",
         new_y="NEXT",
     )
@@ -199,6 +234,8 @@ def export_report_to_pdf(
             summary = item.get("summary") or ""
             source = item.get("source") or "RSS"
             pub_str = item.get("published_str") or ""
+            rel_age = item.get("relative_age") or ""
+            age_suffix = f" ({rel_age})" if rel_age else ""
             matched = ", ".join(item.get("matched_coins") or [])
             tag_prefix = f"[{matched}] " if matched else ""
 
@@ -210,7 +247,7 @@ def export_report_to_pdf(
             # Мета-строка (Источник и время публикации)
             pdf.set_font(ff, "", 8.5)
             pdf.set_text_color(110, 125, 145)
-            meta_line = f"Источник: {source}   •   Опубликовано: {pub_str}"
+            meta_line = f"Источник: {source}   •   Опубликовано: {pub_str}{age_suffix}"
             pdf.cell(0, 5, meta_line, new_x="LMARGIN", new_y="NEXT")
 
             # Краткое описание (очищенное от HTML)
@@ -221,7 +258,7 @@ def export_report_to_pdf(
 
             pdf.ln(3)
 
-    # 4. Сохранение файла на Рабочий стол пользователя
+    # 5. Сохранение файла на Рабочий стол пользователя
     if output_path is None:
         desktop_dir = get_desktop_directory()
         file_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")

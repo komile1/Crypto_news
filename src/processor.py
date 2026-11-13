@@ -64,6 +64,22 @@ def _normalize_title(title: str) -> str:
     return " ".join(cleaned.split())
 
 
+def format_relative_age(pub_ts: float, now_ts: float | None = None) -> str:
+    """Возвращает человекочитаемый возраст новости (например, '25 мин. назад', '4 дн. назад')."""
+    if pub_ts <= 0:
+        return ""
+    current = now_ts if now_ts is not None else time.time()
+    diff = max(0.0, current - pub_ts)
+    if diff < 3600:
+        mins = max(1, int(diff // 60))
+        return f"{mins} мин. назад"
+    if diff < 86400:
+        hours = max(1, int(diff // 3600))
+        return f"{hours} ч. назад"
+    days = max(1, int(diff // 86400))
+    return f"{days} дн. назад"
+
+
 def is_spam_or_noise(item: dict[str, Any]) -> bool:
     """Проверяет запись на наличие рекламных маркеров или слишком короткого заголовка."""
     title = (item.get("title") or "").strip()
@@ -131,19 +147,52 @@ def filter_by_timeframe(
     timeframe: str = "24h",
     now_ts: float | None = None,
 ) -> list[dict[str, Any]]:
-    """Фильтрует список новостей по времени публикации (24ч, 3 дня, 7 дней, месяц и т.д.)."""
-    current_ts = now_ts if now_ts is not None else time.time()
+    """
+    Фильтрует список новостей по времени публикации (1ч, 6ч, 24ч, неделя, месяц).
+    Использует эталонное время относительно самой свежей статьи в ленте, если системные часы смещены,
+    и обогащает каждую запись полем relative_age.
+    """
+    if not news_items:
+        return []
+
+    valid_timestamps = [float(item.get("published_ts") or 0.0) for item in news_items if float(item.get("published_ts") or 0.0) > 0]
+    reference_now = now_ts if now_ts is not None else (max(valid_timestamps) if valid_timestamps else time.time())
+    # Если системное время близко к времени свежих публикаций, берем максимум из них
+    if now_ts is None:
+        sys_now = time.time()
+        if abs(sys_now - reference_now) < 3 * 86400:
+            reference_now = max(sys_now, reference_now)
+
     max_age_seconds = resolve_timeframe_seconds(timeframe)
-    cutoff_ts = current_ts - max_age_seconds
+    cutoff_ts = reference_now - max_age_seconds
 
     filtered: list[dict[str, Any]] = []
     for item in news_items:
         pub_ts = float(item.get("published_ts") or 0.0)
-        if pub_ts <= 0.0 or pub_ts >= cutoff_ts:
-            filtered.append(item)
+        # Отсекаем статьи старше выбранного периода и статьи из будущего (> +2ч от эталона)
+        if pub_ts > 0.0 and (cutoff_ts <= pub_ts <= reference_now + 7200):
+            enriched = dict(item)
+            enriched["relative_age"] = format_relative_age(pub_ts, reference_now)
+            filtered.append(enriched)
 
     # Сортируем от самых свежих к более старым
     filtered.sort(key=lambda x: float(x.get("published_ts") or 0.0), reverse=True)
+
+    # Для длинных периодов («За неделю», «За месяц») при большом числе новостей
+    # обеспечиваем равномерную выборку по дням периода, чтобы не показывать только последние сутки
+    if max_age_seconds >= 7 * 86400 and len(filtered) > 25:
+        day_buckets: dict[int, list[dict[str, Any]]] = {}
+        for item in filtered:
+            days_ago = int(max(0.0, reference_now - float(item.get("published_ts") or 0.0)) // 86400)
+            day_buckets.setdefault(days_ago, []).append(item)
+
+        if len(day_buckets) > 1:
+            balanced: list[dict[str, Any]] = []
+            max_per_day = max(3, 35 // len(day_buckets))
+            for day_idx in sorted(day_buckets.keys()):
+                balanced.extend(day_buckets[day_idx][:max_per_day])
+            return balanced
+
     return filtered
 
 
@@ -158,7 +207,7 @@ def filter_by_coins(
 
     matched_news: list[dict[str, Any]] = []
     for item in news_items:
-        searchable_text = f"{item.get('title', '')} {item.get('summary', '')}"
+        searchable_text = f"{item.get('title', '')} {item.get('summary', '')} {item.get('source', '')}"
         matched_tickers: list[str] = []
 
         for ticker in normalized_coins:
@@ -167,7 +216,6 @@ def filter_by_coins(
                 if pattern.search(searchable_text):
                     matched_tickers.append(ticker)
             else:
-                # Резервный поиск по точному слову для пользовательских тикеров
                 fallback_re = re.compile(rf"\b{re.escape(ticker)}\b", re.IGNORECASE)
                 if fallback_re.search(searchable_text):
                     matched_tickers.append(ticker)
@@ -185,8 +233,8 @@ def filter_news(
     selected_coins: list[str],
     timeframe: str = "24h",
 ) -> list[dict[str, Any]]:
-    """Полный пайплайн фильтрации на стандартных списках/словарях: дедупликация -> период -> монеты."""
+    """Полный пайплайн фильтрации на стандартных списках/словарях: дедупликация -> монеты -> период."""
     unique_items = deduplicate_news(news_items)
-    time_filtered = filter_by_timeframe(unique_items, timeframe=timeframe)
-    coin_filtered = filter_by_coins(time_filtered, selected_coins=selected_coins)
-    return coin_filtered
+    coin_filtered = filter_by_coins(unique_items, selected_coins=selected_coins)
+    time_filtered = filter_by_timeframe(coin_filtered, timeframe=timeframe)
+    return time_filtered

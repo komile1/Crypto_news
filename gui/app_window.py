@@ -2,21 +2,22 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 import os
 import sys
 import threading
-from datetime import datetime
 from typing import Any, Callable
 
 import customtkinter as ctk
 
 from gui.theme import DEFAULT_COINS, PALETTE, TIMELINE_OPTIONS
+from src.chart_generator import render_price_charts_image
 from src.core import collect_and_filter_data
 from src.pdf_exporter import export_report_to_pdf, resolve_resource_path
 
 
 class CryptoMonitorApp(ctk.CTk):
-    """Десктопный интерфейс мониторинга криптовалют и генерации PDF-отчетов."""
+    """Десктопный интерфейс мониторинга криптовалют, графиков цен и генерации PDF-отчетов."""
 
     def __init__(
         self,
@@ -28,10 +29,14 @@ class CryptoMonitorApp(ctk.CTk):
         self._on_generate_report = on_generate_report
         self._on_export_pdf = on_export_pdf
         self._is_busy: bool = False
+        self._has_generated_once: bool = False
+        self._show_chart: bool = True
 
-        # Текущие загруженные данные для мгновенного экспорта в PDF
+        # Текущие загруженные данные для мгновенного экспорта в PDF и отрисовки графиков
         self._current_prices: dict[str, dict[str, float]] = {}
+        self._current_price_history: dict[str, list[dict[str, float]]] = {}
         self._current_news: list[dict[str, Any]] = []
+        self._current_ctk_chart: ctk.CTkImage | None = None
 
         # Глобальная конфигурация темы
         ctk.set_appearance_mode("dark")
@@ -39,8 +44,8 @@ class CryptoMonitorApp(ctk.CTk):
 
         # Параметры окна
         self.title("Crypto Monitor & Report")
-        self.geometry("1080x660")
-        self.minsize(920, 580)
+        self.geometry("1120x700")
+        self.minsize(940, 600)
         self.configure(fg_color=PALETTE.bg_root)
         self._apply_window_icon()
 
@@ -55,7 +60,7 @@ class CryptoMonitorApp(ctk.CTk):
         self.font_item = ctk.CTkFont(family="Segoe UI", size=14, weight="normal")
         self.font_btn_cyan = ctk.CTkFont(family="Segoe UI", size=15, weight="bold")
         self.font_btn_blue = ctk.CTkFont(family="Segoe UI", size=15, weight="bold")
-        self.font_card_header = ctk.CTkFont(family="Segoe UI", size=20, weight="bold")
+        self.font_card_header = ctk.CTkFont(family="Segoe UI", size=19, weight="bold")
         self.font_news_title = ctk.CTkFont(family="Segoe UI", size=14, weight="bold")
         self.font_news_body = ctk.CTkFont(family="Segoe UI", size=13, weight="normal")
         self.font_meta = ctk.CTkFont(family="Segoe UI", size=11, weight="normal")
@@ -81,7 +86,7 @@ class CryptoMonitorApp(ctk.CTk):
     # ------------------------------------------------------------------
 
     def _setup_layout(self) -> None:
-        """Создает трехколоночную структуру: Rail (слева), Sidebar (фильтры), Content (превью)."""
+        """Создает трехколоночную структуру: Rail (слева), Sidebar (фильтры), Content (превью + графики)."""
         self.grid_columnconfigure(0, weight=0, minsize=54)   # Узкая панель иконок
         self.grid_columnconfigure(1, weight=0, minsize=295)  # Панель «Крипто Монитор»
         self.grid_columnconfigure(2, weight=1)               # Правая область контента
@@ -104,7 +109,7 @@ class CryptoMonitorApp(ctk.CTk):
         self.rail_frame.grid(row=0, column=0, sticky="nsew")
         self.rail_frame.grid_propagate(False)
         self.rail_frame.grid_columnconfigure(0, weight=1)
-        self.rail_frame.grid_rowconfigure(4, weight=1)  # Распорка по центру
+        self.rail_frame.grid_rowconfigure(4, weight=1)
 
         # Активная вкладка «Рапорт» с голубым вертикальным индикатором слева
         active_item_holder = ctk.CTkFrame(self.rail_frame, fg_color="transparent", height=48)
@@ -164,7 +169,7 @@ class CryptoMonitorApp(ctk.CTk):
         )
         self.btn_nav_info.grid(row=2, column=0, pady=6)
 
-        # Нижний блок индикаторов и шестеренки (как на референсе)
+        # Нижний блок индикаторов и шестеренки
         bottom_rail = ctk.CTkFrame(self.rail_frame, fg_color="transparent")
         bottom_rail.grid(row=5, column=0, pady=(0, 14))
 
@@ -266,7 +271,7 @@ class CryptoMonitorApp(ctk.CTk):
         )
         btn_reset_all.grid(row=0, column=2)
 
-        # Список чекбоксов с подсветкой выбранных строк (как на референсе)
+        # Список чекбоксов с подсветкой выбранных строк
         self.filter_list_frame = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
         self.filter_list_frame.grid(row=3, column=0, sticky="ew", padx=18, pady=(0, 18))
         self.filter_list_frame.grid_columnconfigure(0, weight=1)
@@ -382,7 +387,7 @@ class CryptoMonitorApp(ctk.CTk):
         self.progress_bar.set(0.36)
 
     def _build_main_content(self) -> None:
-        """Создает правую область: верхнюю строку котировок, карточку «Топ-5 новостей» и кнопку «Скачать PDF»."""
+        """Создает правую область: верхнюю строку котировок, карточку с графиками и новостями и кнопку «Скачать PDF»."""
         self.right_container = ctk.CTkFrame(
             self,
             corner_radius=0,
@@ -407,7 +412,7 @@ class CryptoMonitorApp(ctk.CTk):
 
         self.lbl_market_bar = ctk.CTkLabel(
             self.top_bar,
-            text="⚡ Нажмите «Сгенерировать рапорт» для загрузки актуальных котировок и RSS",
+            text="⚡ Нажмите «Сгенерировать рапорт» или выберите Timeline для загрузки цен и графиков",
             font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
             text_color=PALETTE.text_secondary,
             anchor="w",
@@ -435,7 +440,7 @@ class CryptoMonitorApp(ctk.CTk):
         self.card_outer.grid_columnconfigure(0, weight=1)
         self.card_outer.grid_rowconfigure(0, weight=1)
 
-        # Внутренняя рамка карточки с заголовком «Топ-5 новостей» и текстовым превью
+        # Внутренняя рамка карточки с заголовком, графиком цен и текстовым превью
         self.card_inner = ctk.CTkFrame(
             self.card_outer,
             corner_radius=8,
@@ -445,11 +450,11 @@ class CryptoMonitorApp(ctk.CTk):
         )
         self.card_inner.grid(row=0, column=0, sticky="nsew", padx=14, pady=(14, 12))
         self.card_inner.grid_columnconfigure(0, weight=1)
-        self.card_inner.grid_rowconfigure(1, weight=1)
+        self.card_inner.grid_rowconfigure(2, weight=1)
 
         # Шапка внутри окна превью
         preview_header_frame = ctk.CTkFrame(self.card_inner, fg_color="transparent")
-        preview_header_frame.grid(row=0, column=0, sticky="ew", padx=18, pady=(14, 4))
+        preview_header_frame.grid(row=0, column=0, sticky="ew", padx=18, pady=(12, 4))
         preview_header_frame.grid_columnconfigure(0, weight=1)
 
         self.lbl_preview_title = ctk.CTkLabel(
@@ -468,7 +473,37 @@ class CryptoMonitorApp(ctk.CTk):
             text_color=PALETTE.text_muted,
             anchor="e",
         )
-        self.lbl_active_filters.grid(row=0, column=1, sticky="e")
+        self.lbl_active_filters.grid(row=0, column=1, sticky="e", padx=(0, 10))
+
+        self.btn_toggle_chart = ctk.CTkButton(
+            preview_header_frame,
+            text="📈 Скрыть график",
+            width=110,
+            height=24,
+            corner_radius=5,
+            fg_color="#0F233A",
+            hover_color="#183658",
+            text_color=PALETTE.accent_cyan,
+            font=self.font_meta,
+            command=self._toggle_chart_visibility,
+        )
+        self.btn_toggle_chart.grid(row=0, column=2, sticky="e")
+
+        # Контейнер визуального графика цен за выбранный промежуток времени
+        self.chart_holder = ctk.CTkFrame(
+            self.card_inner,
+            fg_color="transparent",
+        )
+        self.chart_holder.grid(row=1, column=0, sticky="ew", padx=12, pady=(2, 4))
+        self.chart_holder.grid_columnconfigure(0, weight=1)
+
+        self.lbl_chart_image = ctk.CTkLabel(
+            self.chart_holder,
+            text="",
+            anchor="center",
+        )
+        self.lbl_chart_image.grid(row=0, column=0, sticky="ew")
+        self.chart_holder.grid_remove()  # Показывается автоматически при получении истории цен
 
         # Текстовое окно превью (CTkTextbox согласно AGENTS.md)
         self.preview_textbox = ctk.CTkTextbox(
@@ -483,7 +518,7 @@ class CryptoMonitorApp(ctk.CTk):
             scrollbar_button_hover_color="#25466E",
             activate_scrollbars=True,
         )
-        self.preview_textbox.grid(row=1, column=0, sticky="nsew", padx=12, pady=(2, 12))
+        self.preview_textbox.grid(row=2, column=0, sticky="nsew", padx=12, pady=(2, 10))
 
         # Настройка цветовых тегов внутри текстового поля для красивой типографики
         tb = self.preview_textbox._textbox
@@ -518,6 +553,16 @@ class CryptoMonitorApp(ctk.CTk):
         """Возвращает выбранный период мониторинга."""
         return self.timeline_var.get()
 
+    def _toggle_chart_visibility(self) -> None:
+        """Переключает видимость блока с графиками цен в окне превью."""
+        self._show_chart = not self._show_chart
+        if self._show_chart and self._current_ctk_chart is not None:
+            self.chart_holder.grid()
+            self.btn_toggle_chart.configure(text="📈 Скрыть график")
+        else:
+            self.chart_holder.grid_remove()
+            self.btn_toggle_chart.configure(text="📈 Показать график")
+
     def _on_coin_toggled(self, ticker: str) -> None:
         """Обновляет подсветку строки чекбокса и бейдж активных фильтров."""
         is_checked = self.coin_vars[ticker].get()
@@ -529,8 +574,10 @@ class CryptoMonitorApp(ctk.CTk):
         self._update_filter_badge()
 
     def _on_timeline_changed(self, _value: str) -> None:
-        """Обновляет бейдж периода при смене значения в выпадающем списке."""
+        """При смене периода в выпадающем списке обновляет бейдж и сразу перезапрашивает данные за новый период."""
         self._update_filter_badge()
+        if self.get_selected_coins() and not self._is_busy:
+            self._handle_generate_clicked()
 
     def _select_all_coins(self) -> None:
         """Отмечает все чекбоксы монет."""
@@ -580,7 +627,7 @@ class CryptoMonitorApp(ctk.CTk):
             ),
             (
                 "5. [BNB / XRP] Обзор ликвидности крупнейших альткоинов на глобальных спотовых площадках",
-                "Торговая активность сохраняет устойчивость, нажмите «Сгенерировать рапорт» слева для получения свежих RSS-лент и цен CoinGecko.",
+                "Торговая активность сохраняет устойчивость, нажмите «Сгенерировать рапорт» или выберите период Timeline слева.",
                 "Источник: Cointelegraph RSS  •  Готов к живому обновлению",
             ),
         ]
@@ -607,10 +654,52 @@ class CryptoMonitorApp(ctk.CTk):
 
         self.preview_textbox.configure(state="disabled")
 
+    def _render_gui_chart(
+        self,
+        price_history: dict[str, list[dict[str, float]]],
+        selected: list[str],
+        timeline: str,
+    ) -> None:
+        """Генерирует и отображает график(и) цен в верхней части окна рапорта."""
+        if not price_history:
+            self.chart_holder.grid_remove()
+            return
+
+        # Компактная высота строки в превью GUI, чтобы помещались и графики, и новости
+        row_h = 135 if len(selected) <= 2 else 110
+        pil_img = render_price_charts_image(
+            price_history=price_history,
+            selected_coins=selected,
+            timeframe=timeline,
+            theme="dark",
+            width=680,
+            row_height=row_h,
+        )
+        if pil_img is None:
+            self.chart_holder.grid_remove()
+            return
+
+        disp_w, disp_h = pil_img.size
+        # Ограничиваем высоту в превью до 240px для удобства чтения новостей
+        if disp_h > 240:
+            scale_factor = 240.0 / disp_h
+            disp_w = int(disp_w * scale_factor)
+            disp_h = 240
+
+        self._current_ctk_chart = ctk.CTkImage(
+            light_image=pil_img,
+            dark_image=pil_img,
+            size=(disp_w, disp_h),
+        )
+        self.lbl_chart_image.configure(image=self._current_ctk_chart, text="")
+        if self._show_chart:
+            self.chart_holder.grid()
+            self.btn_toggle_chart.configure(text="📈 Скрыть график")
+
     def _format_market_bar(self, prices: dict[str, dict[str, float]], selected: list[str]) -> str:
         """Форматирует строку актуальных котировок для верхней панели."""
         if not prices:
-            return "⚡ Котировки: нет данных от CoinGecko (проверьте интернет-соединение)"
+            return "⚡ Котировки: нет данных (проверьте интернет-соединение)"
 
         order = [c for c in selected if c in prices] or list(prices.keys())
         parts: list[str] = []
@@ -635,7 +724,7 @@ class CryptoMonitorApp(ctk.CTk):
     # ------------------------------------------------------------------
 
     def _handle_generate_clicked(self) -> None:
-        """Обработчик нажатия кнопки «Сгенерировать рапорт»."""
+        """Обработчик нажатия кнопки «Сгенерировать рапорт» (и смены периода Timeline)."""
         if self._is_busy:
             return
 
@@ -645,6 +734,7 @@ class CryptoMonitorApp(ctk.CTk):
         if not selected:
             self.set_progress(0.0, "Выберите монеты!")
             self.render_news_items([])
+            self.chart_holder.grid_remove()
             return
 
         if self._on_generate_report is not None:
@@ -652,8 +742,10 @@ class CryptoMonitorApp(ctk.CTk):
             return
 
         self._is_busy = True
+        self._has_generated_once = True
+        period_short = timeline.replace("Timeline: ", "")
         self.btn_generate.configure(state="disabled", text="Сбор данных...")
-        self.set_progress(0.25, "Запрос RSS и CoinGecko...")
+        self.set_progress(0.25, f"Сбор ({period_short})...")
 
         worker = threading.Thread(
             target=self._run_collect_worker,
@@ -663,25 +755,26 @@ class CryptoMonitorApp(ctk.CTk):
         worker.start()
 
     def _run_collect_worker(self, selected: list[str], timeline: str) -> None:
-        """Фоновый поток сбора RSS/API, записи temp_data.json и фильтрации."""
+        """Фоновый поток сбора RSS/API, истории цен, записи temp_data.json и фильтрации."""
         try:
             result = collect_and_filter_data(selected_coins=selected, timeframe=timeline)
-            self.after(0, lambda: self._on_collect_finished(selected, result, None))
+            self.after(0, lambda: self._on_collect_finished(selected, timeline, result, None))
         except Exception as exc:
             print(
                 f"[PARSER ERROR] Worker Thread: {type(exc).__name__}: {exc}",
                 file=sys.stderr,
                 flush=True,
             )
-            self.after(0, lambda e=exc: self._on_collect_finished(selected, None, e))
+            self.after(0, lambda e=exc: self._on_collect_finished(selected, timeline, None, e))
 
     def _on_collect_finished(
         self,
         selected: list[str],
+        timeline: str,
         result: dict[str, Any] | None,
         error: Exception | None,
     ) -> None:
-        """Обновляет GUI после завершения фонового сбора и фильтрации данных."""
+        """Обновляет GUI после завершения фонового сбора, строит график цен и выводит новости."""
         self._is_busy = False
         self.btn_generate.configure(state="normal", text="Сгенерировать рапорт")
 
@@ -690,14 +783,19 @@ class CryptoMonitorApp(ctk.CTk):
             return
 
         self._current_prices = result.get("prices", {})
+        self._current_price_history = result.get("price_history", {})
         self._current_news = result.get("news", [])
 
-        # Обновляем верхнюю панель котировок и статус JSON-кэша
+        # 1. Обновляем верхнюю панель котировок и статус JSON-кэша
         self.lbl_market_bar.configure(text=self._format_market_bar(self._current_prices, selected))
         now_short = datetime.now().strftime("%H:%M:%S")
         self.lbl_cache_badge.configure(text=f"temp_data.json: {now_short}")
 
-        # Отрисовываем отфильтрованные новости
+        # 2. Отрисовываем график(и) цен за выбранный промежуток времени
+        self._render_gui_chart(self._current_price_history, selected, timeline)
+
+        # 3. Отрисовываем отфильтрованные новости с указанием возраста публикации
+        period_short = timeline.replace("Timeline: ", "")
         formatted_items: list[tuple[str, str, str]] = []
         for idx, item in enumerate(self._current_news, start=1):
             matched = ", ".join(item.get("matched_coins") or selected)
@@ -705,18 +803,20 @@ class CryptoMonitorApp(ctk.CTk):
             summary = item.get("summary") or "Описание отсутствует."
             source = item.get("source") or "RSS"
             pub_str = item.get("published_str") or ""
-            meta = f"Источник: {source}   •   {pub_str}   •   Тикеры: {matched}"
+            rel_age = item.get("relative_age") or ""
+            age_badge = f" ({rel_age})" if rel_age else ""
+            meta = f"Источник: {source}   •   {pub_str}{age_badge}   •   Период: {period_short}"
             formatted_items.append((title, summary, meta))
 
         count = len(formatted_items)
         self.lbl_preview_title.configure(
-            text=f"Топ-{count} новостей" if count > 0 else "Новости не найдены"
+            text=f"Рапорт: {count} новостей ({period_short})" if count > 0 else f"Новости не найдены ({period_short})"
         )
         self.render_news_items(formatted_items)
-        self.set_progress(1.0, f"Собрано: {count} нов. ({now_short})")
+        self.set_progress(1.0, f"Готово: {count} нов. ({now_short})")
 
     def _handle_export_pdf_clicked(self) -> None:
-        """Обработчик нажатия кнопки «Скачать PDF» — сохраняет PDF-отчет на Рабочий стол."""
+        """Обработчик нажатия кнопки «Скачать PDF» — сохраняет PDF-отчет с графиками на Рабочий стол."""
         if self._is_busy:
             return
 
@@ -732,7 +832,7 @@ class CryptoMonitorApp(ctk.CTk):
 
         self._is_busy = True
         self.btn_export_pdf.configure(state="disabled", text="⏳  Генерация PDF...")
-        self.set_progress(0.5, "Экспорт в PDF...")
+        self.set_progress(0.5, "Экспорт PDF + графиков...")
 
         worker = threading.Thread(
             target=self._run_pdf_worker,
@@ -742,12 +842,12 @@ class CryptoMonitorApp(ctk.CTk):
         worker.start()
 
     def _run_pdf_worker(self, selected: list[str], timeline: str) -> None:
-        """Фоновый поток генерации PDF на Рабочий стол."""
+        """Фоновый поток генерации PDF (включая графики цен за выбранный период) на Рабочий стол."""
         try:
-            # Если пользователь еще не нажимал «Сгенерировать рапорт», сначала соберем свежие данные
             if not self._current_prices and not self._current_news:
                 data = collect_and_filter_data(selected_coins=selected, timeframe=timeline)
                 self._current_prices = data.get("prices", {})
+                self._current_price_history = data.get("price_history", {})
                 self._current_news = data.get("news", [])
 
             pdf_path = export_report_to_pdf(
@@ -755,6 +855,7 @@ class CryptoMonitorApp(ctk.CTk):
                 news_items=self._current_news,
                 selected_coins=selected,
                 timeframe=timeline,
+                price_history=self._current_price_history,
             )
             self.after(0, lambda p=pdf_path: self._on_pdf_finished(p, None))
         except Exception as exc:
@@ -775,13 +876,16 @@ class CryptoMonitorApp(ctk.CTk):
             return
 
         filename = os.path.basename(pdf_path)
-        self.set_progress(1.0, f"PDF на Рабочем столе!")
+        self.set_progress(1.0, "PDF на Рабочем столе!")
         self.lbl_cache_badge.configure(text=f"PDF: {filename}")
 
     def _focus_report_view(self) -> None:
         """Возвращает фокус к основному режиму просмотра новостей."""
         if self._current_news:
-            self.lbl_preview_title.configure(text=f"Топ-{len(self._current_news)} новостей")
+            period_short = self.get_selected_timeline().replace("Timeline: ", "")
+            self.lbl_preview_title.configure(
+                text=f"Рапорт: {len(self._current_news)} новостей ({period_short})"
+            )
         else:
             self.lbl_preview_title.configure(text="Топ-5 новостей")
             self._populate_initial_preview()
@@ -805,12 +909,12 @@ class CryptoMonitorApp(ctk.CTk):
         info_items = [
             (
                 "Архитектура автономного десктопного приложения",
-                "Работает полностью локально без выделенных серверов и СУБД. Все котировки (CoinGecko) и RSS-ленты (CoinDesk, Cointelegraph, Decrypt) обрабатываются стандартными структурами Python (без Pandas) и сохраняются в перезаписываемый файл temp_data.json.",
-                "Стек: Python  •  CustomTkinter  •  fpdf2 (UTF-8)  •  feedparser  •  requests",
+                "Работает полностью локально без выделенных серверов и СУБД. Котировки, исторические свечи (Binance/CoinGecko) и RSS-ленты обрабатываются стандартными структурами Python и сохраняются в перезаписываемый файл temp_data.json.",
+                "Стек: Python  •  CustomTkinter  •  fpdf2 (UTF-8)  •  Pillow Charts  •  feedparser  •  requests",
             ),
             (
-                "Экспорт PDF на Рабочий стол и сборка в .exe",
-                "Итоговые PDF-отчеты автоматически сохраняются на Рабочий стол пользователя с поддержкой кириллических TTF-шрифтов.",
+                "Графики цен и экспорт PDF на Рабочий стол",
+                "При выборе любого периода Timeline строятся графики цен выбранных монет за этот период, которые отображаются в превью и встраиваются в экспортируемый PDF-рапорт.",
                 "Статус: Полностью функциональное приложение",
             ),
         ]
