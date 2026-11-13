@@ -258,13 +258,18 @@ def export_report_to_pdf(
 
             pdf.ln(3)
 
-    # 5. Сохранение файла на Рабочий стол пользователя
+    # 5. Сохранение файла на Рабочий стол пользователя (например: bnb_raport.pdf или btc_sol_raport.pdf)
     if output_path is None:
         desktop_dir = get_desktop_directory()
-        file_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_path = os.path.join(desktop_dir, f"Crypto_Market_Report_{file_stamp}.pdf")
+        coins_slug = "_".join(c.strip().lower() for c in selected_coins if c.strip()) or "crypto"
+        output_path = os.path.join(desktop_dir, f"{coins_slug}_raport.pdf")
 
     try:
+        pdf.output(output_path)
+    except PermissionError:
+        # Если файл уже открыт в PDF-ридере, сохраняем с временным суффиксом
+        base, ext = os.path.splitext(output_path)
+        output_path = f"{base}_{datetime.now().strftime('%H%M%S')}{ext}"
         pdf.output(output_path)
     except Exception as exc:
         print(
