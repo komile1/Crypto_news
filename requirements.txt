@@ -1,6 +1,5 @@
 customtkinter
-pandas
-fpdf
+fpdf2
 feedparser
 requests
 pyinstaller
